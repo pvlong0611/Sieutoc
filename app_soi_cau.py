@@ -5,7 +5,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(
-    page_title="Soi Cầu GĐB 5 Số - Lọc Cầu ≥ 95% Chuẩn Xác",
+    page_title="Soi Cầu GĐB 5 Số - Vào Tiền Gỡ Thắng Reset Về Gốc",
     page_icon="🎯",
     layout="wide",
 )
@@ -245,9 +245,6 @@ def loc_cau_dat_chuan_95(
     yeu_cau_an_thong: bool = True,
     cho_phep_du_phong: bool = False,
 ):
-    """Chỉ lấy các cầu (Tiến/Lùi + Chế độ + Vị trí) có tỷ lệ ăn >= nguong_ty_le (mặc định 95%).
-    Không pha loãng bằng các cầu thấp điểm trừ khi người dùng bật dự phòng.
-    """
     cac_che_do = ["Chạm", "Tổng", "Đầu", "Đuôi"]
     bang_cau_dat_chuan = []
     tin_hieu_dat_chuan = []
@@ -261,7 +258,6 @@ def loc_cau_dat_chuan_95(
                     dat_ty_le = res["_ty_le_tong"] >= nguong_ty_le
                     dat_streak = (res["_streak_cur"] >= 1) if yeu_cau_an_thong else True
 
-                    # Trọng số ưu tiên tỷ lệ ăn cao + chuỗi ăn thông
                     trong_so = (
                         res["_ty_le_tong"] * 2.0
                         + res["_streak_cur"] * 15.0
@@ -309,7 +305,6 @@ def loc_cau_dat_chuan_95(
             ),
             reverse=True,
         )
-        # Chỉ lấy tối đa 5 ứng viên cao nhất để tránh loãng
         tin_hieu_dat_chuan = tat_ca_ung_vien[:5]
         bang_cau_dat_chuan = tin_hieu_dat_chuan
         du_phong_da_dung = True
@@ -322,9 +317,6 @@ def loc_cau_dat_chuan_95(
 
 
 def cham_diem_siet_dan(tin_hieu_list: list[dict], so_luong_dan: int):
-    """Chấm điểm 100 số (00..99) dựa trên các cầu >= 95%,
-    ưu tiên số khớp nhiều cầu chất lượng cao nhất để không làm loãng dàn.
-    """
     if not tin_hieu_list:
         df_empty = pd.DataFrame([
             {"Số": f"{i:02d}", "Điểm": 0.0, "Số cầu ≥95% khớp": 0}
@@ -367,46 +359,59 @@ def cham_diem_siet_dan(tin_hieu_list: list[dict], so_luong_dan: int):
         .reset_index(drop=True)
     )
 
-    # Chỉ chọn những số thực sự có khớp tín hiệu chất lượng cao (Điểm > 0)
     df_co_tin_hieu = df_diem[df_diem["Điểm"] > 0]
     dan_chon = sorted(df_co_tin_hieu.head(so_luong_dan)["Số"].tolist())
     return df_diem, dan_chon
 
 
-def tinh_diem_go_von_tiet_kiem(
+def tinh_diem_go_reset(
     so_luong_so: int,
     lo_don_hien_tai: int,
+    so_tay_thua_lien_tiep: int,
     von_hien_tai: int,
     gia_1_diem: int,
     tien_trung_1_diem: int,
     diem_khoi_dau: int,
-    lai_muc_tieu: int,
+    he_so_gap: float,
+    lai_bu_toi_thieu: int,
     ty_le_von_toi_da_tay: float,
 ) -> dict:
+    """Thắng tay nào thì tay sau reset về `diem_khoi_dau` (vd: 5đ).
+    Nếu thua thì nâng điểm để ăn là đủ bù lỗ dồn + có lãi nhẹ (hoặc nhân theo hệ số).
+    """
     if so_luong_so <= 0:
         return {
             "diem_so": 0,
             "goc_danh": 0,
             "tien_trung": 0,
             "lai_neu_an": 0,
-            "lai_rong_1_diem": 0,
+            "che_do_tay": "Nghỉ",
         }
 
     chi_phi_1_diem_dan = so_luong_so * gia_1_diem
     lai_rong_1_diem = tien_trung_1_diem - chi_phi_1_diem_dan
 
-    if lo_don_hien_tai > 0 and lai_rong_1_diem > 0:
-        can_thu_hoi = lo_don_hien_tai + lai_muc_tieu
-        diem_go_lai = math.ceil(can_thu_hoi / lai_rong_1_diem)
+    # Tay đầu chuỗi hoặc sau khi vừa ăn -> luôn về đúng mức khởi đầu (ví dụ 5đ)
+    if lo_don_hien_tai <= 0 or so_tay_thua_lien_tiep <= 0:
+        diem_de_xuat = diem_khoi_dau
+        che_do_tay = "Mức gốc (vừa ăn / khởi đầu)"
     else:
-        diem_go_lai = diem_khoi_dau
+        # Tính số điểm cần để nếu trúng 1 số thì thu đủ lỗ dồn + lãi bù tối thiểu
+        if lai_rong_1_diem > 0:
+            diem_can_go = math.ceil((lo_don_hien_tai + lai_bu_toi_thieu) / lai_rong_1_diem)
+        else:
+            diem_can_go = diem_khoi_dau
 
-    diem_de_xuat = max(diem_khoi_dau, diem_go_lai)
+        # Đồng thời tính bậc nhân theo hệ số (vd 5đ -> 10đ -> 20đ nếu hệ số = 2)
+        diem_theo_he_so = math.ceil(diem_khoi_dau * (he_so_gap ** so_tay_thua_lien_tiep))
+        diem_de_xuat = max(diem_khoi_dau, diem_can_go, diem_theo_he_so)
+        che_do_tay = f"Gỡ lỗ tay thua #{so_tay_thua_lien_tiep}"
+
+    # Khống chế trần vốn tối đa mỗi tay để giữ an toàn vốn gốc
     ngan_sach_tay_toi_da = int(max(0, von_hien_tai) * (ty_le_von_toi_da_tay / 100.0))
-
     if chi_phi_1_diem_dan > 0 and ngan_sach_tay_toi_da >= chi_phi_1_diem_dan:
-        diem_tran_von = max(diem_khoi_dau, ngan_sach_tay_toi_da // chi_phi_1_diem_dan)
-        diem_thuc_te = min(diem_de_xuat, diem_tran_von)
+        diem_tran = max(diem_khoi_dau, ngan_sach_tay_toi_da // chi_phi_1_diem_dan)
+        diem_thuc_te = min(diem_de_xuat, diem_tran)
     else:
         diem_thuc_te = diem_de_xuat
 
@@ -419,7 +424,7 @@ def tinh_diem_go_von_tiet_kiem(
         "goc_danh": goc_danh,
         "tien_trung": tien_trung,
         "lai_neu_an": lai_neu_an,
-        "lai_rong_1_diem": lai_rong_1_diem,
+        "che_do_tay": che_do_tay,
     }
 
 
@@ -434,7 +439,8 @@ def backtest_cau_95(
     gia_1_diem: int,
     tien_trung_1_diem: int,
     diem_khoi_dau: int,
-    lai_muc_tieu: int,
+    he_so_gap: float,
+    lai_bu_toi_thieu: int,
     ty_le_von_toi_da_tay: float,
     von_ban_dau: int,
     moc_chot_lai: int,
@@ -451,6 +457,7 @@ def backtest_cau_95(
 
     von_hien_tai = von_ban_dau
     lo_don_hien_tai = 0
+    so_tay_thua_lien_tiep = 0
     tong_goc_da_danh = 0
 
     for idx in range(2, len(ds_5so) - 1):
@@ -475,22 +482,25 @@ def backtest_cau_95(
                 "Kỳ KQ": ky_label,
                 "Đề": de_ky_sau,
                 "Điểm/số": 0,
+                "Loại tay": f"Nghỉ (<{nguong_ty_le:.0f}%)",
                 "Vốn tay": "0đ",
                 "Tiền trúng": "0đ",
                 "Lãi/Lỗ tay": "+0đ",
                 "Lãi/Lỗ lũy kế": f"{von_hien_tai - von_ban_dau:+,}đ",
-                "Trạng thái": f"NGHỈ (Không có cầu ≥{nguong_ty_le:.0f}%)",
+                "Trạng thái": "NGHỈ",
             })
             continue
 
-        plan = tinh_diem_go_von_tiet_kiem(
+        plan = tinh_diem_go_reset(
             so_luong_so=len(dan_ky),
             lo_don_hien_tai=lo_don_hien_tai,
+            so_tay_thua_lien_tiep=so_tay_thua_lien_tiep,
             von_hien_tai=von_hien_tai,
             gia_1_diem=gia_1_diem,
             tien_trung_1_diem=tien_trung_1_diem,
             diem_khoi_dau=diem_khoi_dau,
-            lai_muc_tieu=lai_muc_tieu,
+            he_so_gap=he_so_gap,
+            lai_bu_toi_thieu=lai_bu_toi_thieu,
             ty_le_von_toi_da_tay=ty_le_von_toi_da_tay,
         )
 
@@ -507,7 +517,9 @@ def backtest_cau_95(
             tien_trung_tay = plan["tien_trung"]
             lai_lo_tay = tien_trung_tay - goc_tay
             von_hien_tai = von_truoc_tay - goc_tay + tien_trung_tay
-            lo_don_hien_tai = max(0, lo_don_hien_tai - max(0, lai_lo_tay))
+            # Đã thắng -> reset lỗ dồn & số tay thua liên tiếp để tay sau về mức khởi đầu
+            lo_don_hien_tai = 0
+            so_tay_thua_lien_tiep = 0
         else:
             truot_cnt += 1
             streak_cur = 0
@@ -515,6 +527,7 @@ def backtest_cau_95(
             lai_lo_tay = -goc_tay
             von_hien_tai = von_truoc_tay - goc_tay
             lo_don_hien_tai += goc_tay
+            so_tay_thua_lien_tiep += 1
 
         lai_lo_luy_ke = von_hien_tai - von_ban_dau
         dat_moc_chot = lai_lo_luy_ke >= moc_chot_lai
@@ -523,11 +536,12 @@ def backtest_cau_95(
             "Kỳ KQ": ky_label,
             "Đề": de_ky_sau,
             "Điểm/số": plan["diem_so"],
+            "Loại tay": plan["che_do_tay"],
             "Vốn tay": f"{goc_tay:,}đ",
             "Tiền trúng": f"{tien_trung_tay:,}đ",
             "Lãi/Lỗ tay": f"{lai_lo_tay:+,}đ",
             "Lãi/Lỗ lũy kế": f"{lai_lo_luy_ke:+,}đ",
-            "Trạng thái": "ĂN" if is_an else "TRƯỢT",
+            "Trạng thái": "ĂN (Reset gốc)" if is_an else "TRƯỢT",
         })
 
         bang_von_rows.append({
@@ -560,14 +574,16 @@ def backtest_cau_95(
     )
     _, dan_cuoi = cham_diem_siet_dan(tin_hieu_cuoi, so_luong_dan)
 
-    ke_hoach_next = tinh_diem_go_von_tiet_kiem(
+    ke_hoach_next = tinh_diem_go_reset(
         so_luong_so=len(dan_cuoi),
         lo_don_hien_tai=lo_don_hien_tai,
+        so_tay_thua_lien_tiep=so_tay_thua_lien_tiep,
         von_hien_tai=von_hien_tai,
         gia_1_diem=gia_1_diem,
         tien_trung_1_diem=tien_trung_1_diem,
         diem_khoi_dau=diem_khoi_dau,
-        lai_muc_tieu=lai_muc_tieu,
+        he_so_gap=he_so_gap,
+        lai_bu_toi_thieu=lai_bu_toi_thieu,
         ty_le_von_toi_da_tay=ty_le_von_toi_da_tay,
     )
 
@@ -578,7 +594,7 @@ def backtest_cau_95(
     tom_tat = {
         "Số lần ĂN": an_cnt,
         "Số lần TRƯỢT": truot_cnt,
-        "Số kỳ nghỉ (chờ ≥95%)": bo_qua_cnt,
+        "Số kỳ nghỉ": bo_qua_cnt,
         "Tỷ lệ ĂN (%)": ty_le_an,
         "Ăn thông max": streak_max,
         "Lãi/Lỗ tích lũy": lai_lo_luy_ke_cuoi,
@@ -613,7 +629,7 @@ def them_so_nhanh_enter():
 
 
 # ---------------- GIAO DIỆN ----------------
-st.title("🎯 Soi Cầu GĐB 5 Số - Chỉ Lấy Cầu ≥ 95% Không Rối Số")
+st.title("🎯 Soi Cầu GĐB 5 Số - Gỡ Khi Thua & Thắng Reset Về Gốc")
 
 with st.expander("📥 Nhập liệu GĐB 5 số (nhấn Enter tự nhận & cập nhật ngay)", expanded=True):
     st.text_input(
@@ -669,11 +685,11 @@ with opt1:
     yeu_cau_an_thong = st.checkbox("Chỉ lấy cầu đang ăn thông (Streak hiện tại ≥ 1)", value=True)
 with opt2:
     cho_phep_du_phong = st.checkbox(
-        "Cho phép lấy dự phòng top cao nhất nếu chưa có cầu ≥ ngưỡng (tắt để lọc thuần ≥95%)",
-        value=False,
+        "Cho phép lấy dự phòng top cao nhất nếu chưa có cầu ≥ ngưỡng",
+        value=True,
     )
 
-st.markdown("### 💰 Cấu Hình Vốn, Tỷ Lệ 1:99.9 & Giữ Gốc")
+st.markdown("### 💰 Cấu Hình Vào Tiền: Thua Nâng Gỡ Lãi - Thắng Reset Về Khởi Đầu")
 v1, v2, v3, v4 = st.columns(4)
 with v1:
     von_ban_dau = int(
@@ -689,19 +705,23 @@ with v3:
     )
 with v4:
     diem_khoi_dau = int(
-        st.number_input("Điểm khởi đầu", min_value=1, max_value=10000, value=1, step=1)
+        st.number_input("Điểm khởi đầu (vd: 5)", min_value=1, max_value=10000, value=5, step=1)
     )
 
-v5, v6, v7 = st.columns(3)
+v5, v6, v7, v8 = st.columns(4)
 with v5:
-    lai_muc_tieu = int(
-        st.number_input("Lãi mục tiêu bù lỗ (đ)", min_value=0, max_value=100_000_000, value=34900, step=1000)
+    he_so_gap = float(
+        st.number_input("Hệ số nhân khi thua", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
     )
 with v6:
-    ty_le_von_toi_da_tay = float(
-        st.slider("Trần vốn tối đa mỗi tay (% vốn hiện tại)", min_value=10.0, max_value=100.0, value=40.0, step=5.0)
+    lai_bu_toi_thieu = int(
+        st.number_input("Lãi cộng thêm khi gỡ (đ)", min_value=0, max_value=100_000_000, value=10000, step=1000)
     )
 with v7:
+    ty_le_von_toi_da_tay = float(
+        st.slider("Trần vốn/tay (% vốn hiện tại)", min_value=10.0, max_value=100.0, value=50.0, step=5.0)
+    )
+with v8:
     moc_chot_lai = int(
         st.number_input("Mốc chốt lãi tổng (đ)", min_value=0, max_value=10_000_000_000, value=200000, step=10000)
     )
@@ -733,29 +753,28 @@ df_bt, df_von, df_chot_lai, tom_tat_bt, ke_hoach_next = backtest_cau_95(
     gia_1_diem=gia_1_diem,
     tien_trung_1_diem=tien_trung_1_diem,
     diem_khoi_dau=diem_khoi_dau,
-    lai_muc_tieu=lai_muc_tieu,
+    he_so_gap=he_so_gap,
+    lai_bu_toi_thieu=lai_bu_toi_thieu,
     ty_le_von_toi_da_tay=ty_le_von_toi_da_tay,
     von_ban_dau=von_ban_dau,
     moc_chot_lai=moc_chot_lai,
 )
 
 if du_phong_da_dung:
-    st.warning(
-        f"Hiện chưa có cầu nào đạt **≥ {nguong_ty_le:.0f}%** trên bộ dữ liệu này; đang hiển thị **5 cầu dự phòng cao nhất** vì bạn đã bật tùy chọn dự phòng."
+    st.info(
+        f"Chưa có cầu nào đạt **≥ {nguong_ty_le:.0f}%**; đang dùng **5 cầu dự phòng cao nhất** (bạn có thể tắt tùy chọn dự phòng nếu chỉ muốn đánh khi đủ ngưỡng)."
     )
 elif tin_hieu_chuan:
     st.success(
-        f"✅ Tìm thấy **{len(tin_hieu_chuan)}** cầu đạt **≥ {nguong_ty_le:.0f}%** — lọc ra dàn **{len(dan_chon)} số** tinh gọn, không pha loãng."
+        f"✅ Đang dùng **{len(tin_hieu_chuan)}** cầu đạt **≥ {nguong_ty_le:.0f}%** để tạo dàn **{len(dan_chon)} số**."
     )
 else:
-    st.warning(
-        f"⏸️ Hiện **không có cầu nào đạt ≥ {nguong_ty_le:.0f}%**. Tool tạm ngưng xuất dàn để tránh đánh cầu yếu và gãy chuỗi liên tiếp."
-    )
+    st.warning(f"⏸️ Hiện chưa có cầu nào đạt **≥ {nguong_ty_le:.0f}%**.")
 
 tab1, tab2, tab3, tab4 = st.tabs([
-    f"🎲 Dàn {len(dan_chon)} Số (≥ {nguong_ty_le:.0f}%)",
-    f"🏆 Danh Sách Cầu ≥ {nguong_ty_le:.0f}%",
-    "💼 Bảng Vốn & Bảng Chốt Lãi",
+    f"🎲 Dàn {len(dan_chon)} Số & Kỳ Tới",
+    "💼 Bảng Vốn & Chốt Lãi",
+    f"🏆 Cầu ≥ {nguong_ty_le:.0f}%",
     "📜 Lịch Sử ĂN / TRƯỢT",
 ])
 
@@ -773,7 +792,7 @@ with tab1:
         )
         delim = " " if dinh_dang_copy.startswith("Cách nhau dấu cách") else ", "
 
-        render_copy_button(chuoi_copy, label=f"📋 COPY DÀN {len(dan_chon)} SỐ", key_suffix="c95")
+        render_copy_button(chuoi_copy, label=f"📋 COPY DÀN {len(dan_chon)} SỐ", key_suffix="rst")
         render_dan_co_dong(dan_chon, delimiter=delim)
 
         k1, k2, k3, k4 = st.columns(4)
@@ -781,16 +800,11 @@ with tab1:
         k2.metric("Gốc đánh kỳ tới", f"{ke_hoach_next['goc_danh']:,}đ")
         k3.metric("Tiền trúng (nếu ăn)", f"{ke_hoach_next['tien_trung']:,}đ")
         k4.metric("Lãi ròng nếu ăn", f"{ke_hoach_next['lai_neu_an']:+,}đ")
+        st.caption(f"Trạng thái kế hoạch kỳ tới: **{ke_hoach_next['che_do_tay']}**")
     else:
-        st.info("Chưa có dàn số nào thỏa mãn điều kiện lọc hiện tại.")
+        st.info("Chưa có dàn số để hiển thị.")
 
 with tab2:
-    if not df_dat_chuan.empty:
-        st.dataframe(df_dat_chuan, use_container_width=True, hide_index=True)
-    else:
-        st.info(f"Không có cầu nào đạt tỷ lệ ăn ≥ {nguong_ty_le:.0f}% với bộ số liệu hiện tại.")
-
-with tab3:
     t1, t2, t3, t4 = st.columns(4)
     t1.metric("Vốn ban đầu", f"{von_ban_dau:,}đ")
     t2.metric("Vốn còn lại", f"{tom_tat_bt['Vốn hiện tại']:,}đ")
@@ -805,6 +819,12 @@ with tab3:
 
     st.subheader("💵 Bảng Chốt Lãi")
     st.dataframe(df_chot_lai, use_container_width=True, hide_index=True)
+
+with tab3:
+    if not df_dat_chuan.empty:
+        st.dataframe(df_dat_chuan, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"Không có cầu nào đạt tỷ lệ ăn ≥ {nguong_ty_le:.0f}%.")
 
 with tab4:
     m1, m2, m3, m4 = st.columns(4)
