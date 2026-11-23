@@ -5,7 +5,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(
-    page_title="Soi Cầu GĐB 5 Số - Gỡ Đủ Gốc & Thắng Reset",
+    page_title="Soi Cầu GĐB 5 Số - Tự Động Nhận Diện Bóng & Gỡ Gốc",
     page_icon="🎯",
     layout="wide",
 )
@@ -58,6 +58,7 @@ st.markdown(
 
 BONG_DUONG = {0: 5, 1: 6, 2: 7, 3: 8, 4: 9, 5: 0, 6: 1, 7: 2, 8: 3, 9: 4}
 BONG_AM = {1: 4, 4: 1, 2: 9, 9: 2, 3: 6, 6: 3, 5: 8, 8: 5, 0: 7, 7: 0}
+CAC_CHE_DO_BONG = ["Không", "Bóng dương", "Bóng âm"]
 
 DU_LIEU_MAC_DINH = """03917
 80129
@@ -219,6 +220,7 @@ def danh_gia_1_vi_tri(
     dai_ky_toi = lay_dai_so(so_cuoi, tien, lui, che_do_bong)
 
     return {
+        "Bóng": che_do_bong,
         "Chế độ": che_do,
         "Vị trí": f"VT{vt}",
         "Tỷ lệ ăn (%)": ty_le_tong,
@@ -235,55 +237,137 @@ def danh_gia_1_vi_tri(
     }
 
 
+def danh_gia_cac_che_do_bong(
+    ds_5so: list[str],
+    vi_tri_chon: list[int],
+    max_tien: int = 8,
+    max_lui: int = 8,
+    nguong_ty_le: float = 95.0,
+) -> tuple[pd.DataFrame, str]:
+    """Đánh giá hiệu suất thực tế của 'Không', 'Bóng dương', 'Bóng âm' để nhận diện bóng ăn cao nhất."""
+    cac_che_do = ["Chạm", "Tổng", "Đầu", "Đuôi"]
+    summary_rows = []
+
+    for bong in CAC_CHE_DO_BONG:
+        ty_le_list = []
+        ty_le_5ky_list = []
+        streak_cur_list = []
+        streak_max_list = []
+        so_cau_dat_chuan = 0
+
+        for tien in range(0, max_tien + 1):
+            for lui in range(0, max_lui + 1):
+                for cd in cac_che_do:
+                    for vt in vi_tri_chon:
+                        res = danh_gia_1_vi_tri(ds_5so, vt, cd, tien, lui, bong)
+                        ty_le_list.append(res["_ty_le_tong"])
+                        ty_le_5ky_list.append(res["_ty_le_5ky"])
+                        streak_cur_list.append(res["_streak_cur"])
+                        streak_max_list.append(res["Ăn thông max"])
+                        if res["_ty_le_tong"] >= nguong_ty_le and res["_streak_cur"] >= 1:
+                            so_cau_dat_chuan += 1
+
+        ty_le_tb = round(sum(ty_le_list) / len(ty_le_list), 2) if ty_le_list else 0.0
+        ty_le_5ky_tb = round(sum(ty_le_5ky_list) / len(ty_le_5ky_list), 2) if ty_le_5ky_list else 0.0
+        ty_le_max = max(ty_le_list) if ty_le_list else 0.0
+        streak_cur_max = max(streak_cur_list) if streak_cur_list else 0
+        streak_max_all = max(streak_max_list) if streak_max_list else 0
+
+        diem_bong = round(
+            so_cau_dat_chuan * 25.0
+            + ty_le_max * 0.5
+            + ty_le_tb * 0.4
+            + ty_le_5ky_tb * 0.3
+            + streak_cur_max * 4.0,
+            2,
+        )
+
+        summary_rows.append({
+            "Chế độ bóng": bong,
+            f"Số cầu ≥{nguong_ty_le:.0f}% (đang ăn)": so_cau_dat_chuan,
+            "Tỷ lệ cao nhất (%)": ty_le_max,
+            "Tỷ lệ TB (%)": ty_le_tb,
+            "Tỷ lệ 5 kỳ TB (%)": ty_le_5ky_tb,
+            "Streak hiện tại max": streak_cur_max,
+            "Ăn thông max": streak_max_all,
+            "Điểm bóng": diem_bong,
+        })
+
+    df_bong = (
+        pd.DataFrame(summary_rows)
+        .sort_values(
+            by=[f"Số cầu ≥{nguong_ty_le:.0f}% (đang ăn)", "Điểm bóng", "Tỷ lệ cao nhất (%)"],
+            ascending=[False, False, False],
+        )
+        .reset_index(drop=True)
+    )
+    bong_tot_nhat = str(df_bong.iloc[0]["Chế độ bóng"]) if not df_bong.empty else "Không"
+    return df_bong, bong_tot_nhat
+
+
 def loc_cau_dat_chuan_95(
     ds_5so: list[str],
     vi_tri_chon: list[int],
-    che_do_bong: str,
+    che_do_bong_loc: str,
     max_tien: int = 8,
     max_lui: int = 8,
     nguong_ty_le: float = 95.0,
     yeu_cau_an_thong: bool = True,
     cho_phep_du_phong: bool = False,
 ):
+    """Nếu che_do_bong_loc == 'Tất cả (Gom mọi bóng ăn cao)': quét cả Không / Bóng dương / Bóng âm
+    để không sót cầu ngon; nếu chọn 1 loại bóng cụ thể thì chỉ lọc đúng loại bóng đó.
+    """
     cac_che_do = ["Chạm", "Tổng", "Đầu", "Đuôi"]
+    ds_bong_xet = (
+        CAC_CHE_DO_BONG
+        if che_do_bong_loc == "Tất cả (Gom mọi bóng ăn cao)"
+        else [che_do_bong_loc]
+    )
+
     bang_cau_dat_chuan = []
     tin_hieu_dat_chuan = []
     tat_ca_ung_vien = []
 
-    for tien in range(0, max_tien + 1):
-        for lui in range(0, max_lui + 1):
-            for cd in cac_che_do:
-                for vt in vi_tri_chon:
-                    res = danh_gia_1_vi_tri(ds_5so, vt, cd, tien, lui, che_do_bong)
-                    dat_ty_le = res["_ty_le_tong"] >= nguong_ty_le
-                    dat_streak = (res["_streak_cur"] >= 1) if yeu_cau_an_thong else True
+    for bong in ds_bong_xet:
+        # Phạt nhẹ nếu mở rộng bóng nhưng tỷ lệ không vượt trội để ưu tiên dải gọn khi bằng điểm
+        he_so_bong = 1.0 if bong == "Không" else 0.98
 
-                    trong_so = (
-                        res["_ty_le_tong"] * 2.0
-                        + res["_streak_cur"] * 15.0
-                        + res["_ty_le_5ky"] * 0.5
-                    )
+        for tien in range(0, max_tien + 1):
+            for lui in range(0, max_lui + 1):
+                for cd in cac_che_do:
+                    for vt in vi_tri_chon:
+                        res = danh_gia_1_vi_tri(ds_5so, vt, cd, tien, lui, bong)
+                        dat_ty_le = res["_ty_le_tong"] >= nguong_ty_le
+                        dat_streak = (res["_streak_cur"] >= 1) if yeu_cau_an_thong else True
 
-                    candidate = {
-                        "Cầu": f"Tiến {tien} - Lùi {lui}",
-                        "Tiến": tien,
-                        "Lùi": lui,
-                        "Chế độ": cd,
-                        "Vị trí": res["Vị trí"],
-                        "Tỷ lệ ăn (%)": res["_ty_le_tong"],
-                        "Tỷ lệ 5 kỳ (%)": res["_ty_le_5ky"],
-                        "Ăn thông hiện tại": res["_streak_cur"],
-                        "Ăn thông max": res["Ăn thông max"],
-                        "Đúng/Tổng": res["Đúng/Tổng"],
-                        "Dải số kỳ tới": res["Dải số kỳ tới"],
-                        "_trong_so": trong_so,
-                        "_tap": set(res["_dai_list"]),
-                    }
-                    tat_ca_ung_vien.append(candidate)
+                        trong_so = (
+                            res["_ty_le_tong"] * 2.0
+                            + res["_streak_cur"] * 15.0
+                            + res["_ty_le_5ky"] * 0.5
+                        ) * he_so_bong
 
-                    if dat_ty_le and dat_streak:
-                        bang_cau_dat_chuan.append(candidate)
-                        tin_hieu_dat_chuan.append(candidate)
+                        candidate = {
+                            "Bóng": bong,
+                            "Cầu": f"Tiến {tien} - Lùi {lui}",
+                            "Tiến": tien,
+                            "Lùi": lui,
+                            "Chế độ": cd,
+                            "Vị trí": res["Vị trí"],
+                            "Tỷ lệ ăn (%)": res["_ty_le_tong"],
+                            "Tỷ lệ 5 kỳ (%)": res["_ty_le_5ky"],
+                            "Ăn thông hiện tại": res["_streak_cur"],
+                            "Ăn thông max": res["Ăn thông max"],
+                            "Đúng/Tổng": res["Đúng/Tổng"],
+                            "Dải số kỳ tới": res["Dải số kỳ tới"],
+                            "_trong_so": trong_so,
+                            "_tap": set(res["_dai_list"]),
+                        }
+                        tat_ca_ung_vien.append(candidate)
+
+                        if dat_ty_le and dat_streak:
+                            bang_cau_dat_chuan.append(candidate)
+                            tin_hieu_dat_chuan.append(candidate)
 
     bang_cau_dat_chuan.sort(
         key=lambda x: (
@@ -376,10 +460,6 @@ def tinh_diem_go_reset(
     ty_le_von_toi_da_tay: float,
     ap_dung_tran_von: bool = False,
 ) -> dict:
-    """Thua bao nhiêu tay thì tay sau vào điểm đủ để ăn là:
-    thu hồi toàn bộ gốc thua các tay trước + hồi gốc tay này + lãi nhẹ (`lai_bu_toi_thieu`).
-    Ăn xong tay sau reset về `diem_khoi_dau`.
-    """
     if so_luong_so <= 0:
         return {
             "diem_so": 0,
@@ -426,7 +506,7 @@ def tinh_diem_go_reset(
 def backtest_cau_95(
     ds_5so: list[str],
     vi_tri_chon: list[int],
-    che_do_bong: str,
+    che_do_bong_loc: str,
     so_luong_dan: int,
     nguong_ty_le: float,
     yeu_cau_an_thong: bool,
@@ -460,7 +540,7 @@ def backtest_cau_95(
         _, tin_hieu_ky, _ = loc_cau_dat_chuan_95(
             lich_su_toi_ky,
             vi_tri_chon=vi_tri_chon,
-            che_do_bong=che_do_bong,
+            che_do_bong_loc=che_do_bong_loc,
             max_tien=8,
             max_lui=8,
             nguong_ty_le=nguong_ty_le,
@@ -559,7 +639,7 @@ def backtest_cau_95(
     _, tin_hieu_cuoi, _ = loc_cau_dat_chuan_95(
         ds_5so,
         vi_tri_chon=vi_tri_chon,
-        che_do_bong=che_do_bong,
+        che_do_bong_loc=che_do_bong_loc,
         max_tien=8,
         max_lui=8,
         nguong_ty_le=nguong_ty_le,
@@ -623,7 +703,7 @@ def them_so_nhanh_enter():
 
 
 # ---------------- GIAO DIỆN ----------------
-st.title("🎯 Soi Cầu GĐB 5 Số - Gỡ Đủ Gốc Thua & Thắng Reset Về Gốc")
+st.title("🎯 Soi Cầu GĐB 5 Số - Tự Động Nhận Diện Bóng & Gỡ Gốc")
 
 with st.expander("📥 Nhập liệu GĐB 5 số (nhấn Enter tự nhận & cập nhật ngay)", expanded=True):
     st.text_input(
@@ -654,10 +734,10 @@ st.info(
 )
 
 if len(ds_5so) < 4:
-    st.warning("Cần ít nhất 4 kỳ GĐB để đánh giá cầu và kiểm tra lịch sử.")
+    st.warning("Cần ít nhất 4 kỳ GĐB để đánh giá cầu, bóng và kiểm tra lịch sử.")
     st.stop()
 
-c1, c2, c3, c4 = st.columns([2, 1.5, 1.3, 1.2])
+c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.7, 1.2, 1.2])
 with c1:
     vi_tri_chon = st.multiselect(
         "Vị trí xét (VT1..VT5)",
@@ -670,9 +750,22 @@ with c2:
         st.slider("Tỷ lệ ăn tối thiểu (%)", min_value=50.0, max_value=100.0, value=95.0, step=1.0)
     )
 with c3:
-    che_do_bong = st.selectbox("Bóng", ["Không", "Bóng dương", "Bóng âm"])
+    che_do_bong_ui = st.selectbox(
+        "Chế độ bóng",
+        [
+            "Tất cả (Gom mọi bóng ăn cao)",
+            "Tự động chọn 1 bóng ăn cao nhất",
+            "Không",
+            "Bóng dương",
+            "Bóng âm",
+        ],
+    )
 with c4:
     so_luong_dan = int(st.selectbox("Dàn số", [55, 65, 75], index=1))
+with c5:
+    diem_khoi_dau = int(
+        st.number_input("Điểm khởi đầu", min_value=1, max_value=10000, value=5, step=1)
+    )
 
 opt1, opt2, opt3 = st.columns(3)
 with opt1:
@@ -684,7 +777,7 @@ with opt2:
 with opt3:
     ap_dung_tran_von = st.checkbox("Siết trần % vốn/tay", value=False)
 
-st.markdown("### 💰 Cấu Hình Vào Tiền: Thua Gỡ Đủ Gốc + Lãi Nhẹ - Thắng Reset Về Khởi Đầu")
+st.markdown("### 💰 Cấu Hình Vốn, Tỷ Lệ 1:99.9 & Gỡ Gốc")
 v1, v2, v3, v4 = st.columns(4)
 with v1:
     von_ban_dau = int(
@@ -699,20 +792,16 @@ with v3:
         st.number_input("Tiền trúng 1 điểm (đ)", min_value=1000, max_value=500_000_000, value=99900, step=100)
     )
 with v4:
-    diem_khoi_dau = int(
-        st.number_input("Điểm khởi đầu (vd: 5)", min_value=1, max_value=10000, value=5, step=1)
-    )
-
-v5, v6, v7 = st.columns(3)
-with v5:
     lai_bu_toi_thieu = int(
         st.number_input("Lãi nhẹ cộng thêm khi gỡ (đ)", min_value=0, max_value=100_000_000, value=10000, step=1000)
     )
-with v6:
+
+v5, v6 = st.columns(2)
+with v5:
     ty_le_von_toi_da_tay = float(
         st.slider("Trần vốn/tay (% vốn hiện tại)", min_value=10.0, max_value=100.0, value=50.0, step=5.0)
     )
-with v7:
+with v6:
     moc_chot_lai = int(
         st.number_input("Mốc chốt lãi tổng (đ)", min_value=0, max_value=10_000_000_000, value=200000, step=10000)
     )
@@ -721,10 +810,29 @@ if not vi_tri_chon:
     st.warning("Vui lòng chọn ít nhất 1 vị trí.")
     st.stop()
 
+df_bong_rank, bong_tot_nhat = danh_gia_cac_che_do_bong(
+    ds_5so=ds_5so,
+    vi_tri_chon=sorted(vi_tri_chon),
+    max_tien=8,
+    max_lui=8,
+    nguong_ty_le=nguong_ty_le,
+)
+
+if che_do_bong_ui == "Tự động chọn 1 bóng ăn cao nhất":
+    che_do_bong_thuc_te = bong_tot_nhat
+    st.success(f"🌗 Tự động nhận diện chế độ bóng ăn cao nhất hiện tại: **{bong_tot_nhat}**")
+elif che_do_bong_ui == "Tất cả (Gom mọi bóng ăn cao)":
+    che_do_bong_thuc_te = "Tất cả (Gom mọi bóng ăn cao)"
+    st.success(
+        f"🌗 Đang tự động gom cầu ngon trên cả **Không / Bóng dương / Bóng âm** (Bóng đang nổi bật nhất: **{bong_tot_nhat}**)"
+    )
+else:
+    che_do_bong_thuc_te = che_do_bong_ui
+
 df_dat_chuan, tin_hieu_chuan, du_phong_da_dung = loc_cau_dat_chuan_95(
     ds_5so=ds_5so,
     vi_tri_chon=sorted(vi_tri_chon),
-    che_do_bong=che_do_bong,
+    che_do_bong_loc=che_do_bong_thuc_te,
     max_tien=8,
     max_lui=8,
     nguong_ty_le=nguong_ty_le,
@@ -736,7 +844,7 @@ df_diem, dan_chon = cham_diem_siet_dan(tin_hieu_chuan, so_luong_dan)
 df_bt, df_von, df_chot_lai, tom_tat_bt, ke_hoach_next = backtest_cau_95(
     ds_5so=ds_5so,
     vi_tri_chon=sorted(vi_tri_chon),
-    che_do_bong=che_do_bong,
+    che_do_bong_loc=che_do_bong_thuc_te,
     so_luong_dan=so_luong_dan,
     nguong_ty_le=nguong_ty_le,
     yeu_cau_an_thong=yeu_cau_an_thong,
@@ -751,21 +859,11 @@ df_bt, df_von, df_chot_lai, tom_tat_bt, ke_hoach_next = backtest_cau_95(
     moc_chot_lai=moc_chot_lai,
 )
 
-if du_phong_da_dung:
-    st.info(
-        f"Chưa có cầu nào đạt **≥ {nguong_ty_le:.0f}%**; đang dùng **5 cầu dự phòng cao nhất**."
-    )
-elif tin_hieu_chuan:
-    st.success(
-        f"✅ Đang dùng **{len(tin_hieu_chuan)}** cầu đạt **≥ {nguong_ty_le:.0f}%** để tạo dàn **{len(dan_chon)} số**."
-    )
-else:
-    st.warning(f"⏸️ Hiện chưa có cầu nào đạt **≥ {nguong_ty_le:.0f}%**.")
-
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     f"🎲 Dàn {len(dan_chon)} Số & Kỳ Tới",
+    "🌗 So Sánh Bóng Âm / Dương / Không",
     "💼 Bảng Vốn & Chốt Lãi",
-    f"🏆 Cầu ≥ {nguong_ty_le:.0f}%",
+    f"🏆 Cầu Đạt Chuẩn ({nguong_ty_le:.0f}%)",
     "📜 Lịch Sử ĂN / TRƯỢT",
 ])
 
@@ -783,7 +881,7 @@ with tab1:
         )
         delim = " " if dinh_dang_copy.startswith("Cách nhau dấu cách") else ", "
 
-        render_copy_button(chuoi_copy, label=f"📋 COPY DÀN {len(dan_chon)} SỐ", key_suffix="full")
+        render_copy_button(chuoi_copy, label=f"📋 COPY DÀN {len(dan_chon)} SỐ", key_suffix="bong")
         render_dan_co_dong(dan_chon, delimiter=delim)
 
         k1, k2, k3, k4 = st.columns(4)
@@ -796,6 +894,10 @@ with tab1:
         st.info("Chưa có dàn số để hiển thị.")
 
 with tab2:
+    st.subheader("Bảng xếp hạng hiệu suất: Không bóng vs Bóng dương vs Bóng âm")
+    st.dataframe(df_bong_rank, use_container_width=True, hide_index=True)
+
+with tab3:
     t1, t2, t3, t4 = st.columns(4)
     t1.metric("Vốn ban đầu", f"{von_ban_dau:,}đ")
     t2.metric("Vốn còn lại", f"{tom_tat_bt['Vốn hiện tại']:,}đ")
@@ -811,13 +913,13 @@ with tab2:
     st.subheader("💵 Bảng Chốt Lãi")
     st.dataframe(df_chot_lai, use_container_width=True, hide_index=True)
 
-with tab3:
+with tab4:
     if not df_dat_chuan.empty:
         st.dataframe(df_dat_chuan, use_container_width=True, hide_index=True)
     else:
-        st.info(f"Không có cầu nào đạt tỷ lệ ăn ≥ {nguong_ty_le:.0f}%.")
+        st.info("Không có cầu nào đạt chuẩn với cấu hình hiện tại.")
 
-with tab4:
+with tab5:
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Số lần ĂN", tom_tat_bt["Số lần ĂN"])
     m2.metric("Số lần TRƯỢT", tom_tat_bt["Số lần TRƯỢT"])
